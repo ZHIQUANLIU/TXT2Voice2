@@ -89,6 +89,18 @@ class MainWindow(QMainWindow):
         file_group.addWidget(self.file_hint)
         left_panel.addLayout(file_group)
 
+        # Recent Files Section
+        self.recent_label = QLabel(self.t["recent_files"])
+        self.recent_label.setStyleSheet("font-size: 12px; margin-top: 10px; color: #64748b;")
+        left_panel.addWidget(self.recent_label)
+        
+        self.recent_list = QListWidget()
+        self.recent_list.setFixedHeight(120)
+        self.recent_list.setStyleSheet("font-size: 12px; background-color: #0f172a; border: 1px dashed #334155;")
+        self.recent_list.itemClicked.connect(self.load_recent_file)
+        left_panel.addWidget(self.recent_list)
+        self.update_recent_ui()
+
         # Provider Section
         self.prov_label = QLabel(self.t["provider"])
         left_panel.addWidget(self.prov_label)
@@ -169,6 +181,7 @@ class MainWindow(QMainWindow):
         self.select_file_btn.setText(self.t["select_file"])
         if not hasattr(self, 'source_path'):
             self.file_hint.setText(self.t["no_file"])
+        self.recent_label.setText(self.t["recent_files"])
         self.prov_label.setText(self.t["provider"])
         self.voice_label.setText(self.t["voice"])
         self.convert_btn.setText(self.t["start"])
@@ -178,6 +191,37 @@ class MainWindow(QMainWindow):
         self.direct_play_btn.setText(self.t["stop_play"] if self.is_reading else self.t["direct_play"])
         if self.worker is None or not self.worker.isRunning():
             self.progress_hint.setText(self.t["ready"])
+        self.update_recent_ui()
+
+    def update_recent_ui(self):
+        self.recent_list.clear()
+        recent = self.config_manager.get_setting("recent_files", [])
+        if not recent:
+            item = QListWidgetItem(self.t["no_recent"])
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.recent_list.addItem(item)
+        else:
+            for path in recent:
+                if os.path.exists(path):
+                    self.recent_list.addItem(os.path.basename(path))
+
+    def load_recent_file(self, item):
+        path_name = item.text()
+        recent = self.config_manager.get_setting("recent_files", [])
+        for p in recent:
+            if os.path.basename(p) == path_name:
+                self.source_path = p
+                self.file_hint.setText(path_name)
+                self.load_segments(p)
+                break
+
+    def add_to_history(self, path):
+        recent = self.config_manager.get_setting("recent_files", [])
+        if path in recent:
+            recent.remove(path)
+        recent.insert(0, path)
+        self.config_manager.set_setting("recent_files", recent[:5])
+        self.update_recent_ui()
 
     def select_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -195,6 +239,14 @@ class MainWindow(QMainWindow):
             for title, body in self.segments:
                 item = QListWidgetItem(f"{title} ({len(body)} chars)")
                 self.segment_list.addItem(item)
+            
+            self.add_to_history(path)
+            # Restore position
+            pos_dict = self.config_manager.get_setting("file_positions", {})
+            last_pos = pos_dict.get(path, 0)
+            if last_pos < len(self.segments):
+                self.segment_list.setCurrentRow(last_pos)
+                self.segment_list.scrollToItem(self.segment_list.item(last_pos))
         except Exception as e:
             QMessageBox.critical(self, self.t["error"], f"Failed: {e}")
 
@@ -247,9 +299,11 @@ class MainWindow(QMainWindow):
         self.is_reading = True
         self.direct_play_btn.setText(self.t["stop_play"])
         
-        # Start from selected segment if any, otherwise from start
+        # Start from selected segment
         selected = self.segment_list.currentRow()
         self.current_read_index = selected if selected >= 0 else 0
+        
+        # Clear specific temp files if needed, but we use segment index naming
         self.play_current_segment()
 
     def stop_read_aloud(self):
@@ -264,41 +318,70 @@ class MainWindow(QMainWindow):
             return
         
         self.segment_list.setCurrentRow(self.current_read_index)
+        # Save position to history
+        if hasattr(self, 'source_path'):
+            pos_dict = self.config_manager.get_setting("file_positions", {})
+            pos_dict[self.source_path] = self.current_read_index
+            self.config_manager.set_setting("file_positions", pos_dict)
+
         title, body = self.segments[self.current_read_index]
         self.progress_hint.setText(self.t["processing"].format(title))
 
         # Synthesis and play
         async def do_read():
-            p_type = self.provider_combo.currentText()
-            voice = self.voice_combo.currentData()
+            file_path = os.path.join(self.temp_play_dir, f"segment_{self.current_read_index}.mp3")
             
-            p = None
-            if p_type == "Edge": p = EdgeTTSProvider()
-            elif p_type == "OpenAI": p = OpenAITTSProvider(self.config_manager.get_api_key("OpenAI"))
-            elif p_type == "DashScope": p = DashScopeTTSProvider(self.config_manager.get_api_key("DashScope"))
-            elif p_type == "Google": p = GoogleTTSProvider(self.config_manager.get_setting("google_creds_path"))
-            elif p_type == "Local": p = LocalTTSProvider()
-            
-            if p:
-                file_path = os.path.join(self.temp_play_dir, f"segment_{self.current_read_index}.mp3")
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                
-                success = await p.synthesize(body, voice, file_path)
-                if success and self.is_reading:
-                    self.player.setSource(QUrl.fromLocalFile(os.path.abspath(file_path)))
-                    self.player.play()
-                elif not success:
-                    QMessageBox.warning(self, self.t["error"], f"Failed to synthesize {title}")
+            # Check if already pre-fetched
+            if not os.path.exists(file_path):
+                success = await self._synthesize_to_file(body, file_path)
+                if not success:
+                    QMessageBox.warning(self, self.t["error"], f"Failed: {title}")
                     self.stop_read_aloud()
-            else:
-                self.stop_read_aloud()
+                    return
+            
+            if self.is_reading:
+                self.player.setSource(QUrl.fromLocalFile(os.path.abspath(file_path)))
+                self.player.play()
+                # Start pre-fetching the next one immediately
+                self.prefetch_next_segment()
 
-        # Run synthesis without blocking UI
         asyncio.run(do_read())
 
+    def prefetch_next_segment(self):
+        next_index = self.current_read_index + 1
+        if next_index < len(self.segments):
+            _, next_body = self.segments[next_index]
+            file_path = os.path.join(self.temp_play_dir, f"segment_{next_index}.mp3")
+            
+            if not os.path.exists(file_path):
+                # Start prefetch in background using a thread so it doesn't block UI or current loop
+                async def _task():
+                    await self._synthesize_to_file(next_body, file_path)
+                
+                # We can't easily use asyncio.create_task here because the main loop is 
+                # usually managed by PyQt or a single asyncio.run.
+                # I'll use a thread for non-blocking prefetch.
+                import threading
+                threading.Thread(target=lambda: asyncio.run(_task()), daemon=True).start()
+
+    async def _synthesize_to_file(self, text, path):
+        p_type = self.provider_combo.currentText()
+        voice = self.voice_combo.currentData()
+        
+        p = None
+        if p_type == "Edge": p = EdgeTTSProvider()
+        elif p_type == "OpenAI": p = OpenAITTSProvider(self.config_manager.get_api_key("OpenAI"))
+        elif p_type == "DashScope": p = DashScopeTTSProvider(self.config_manager.get_api_key("DashScope"))
+        elif p_type == "Google": p = GoogleTTSProvider(self.config_manager.get_setting("google_creds_path"))
+        elif p_type == "Local": p = LocalTTSProvider()
+        
+        if p:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            return await p.synthesize(text, voice, path)
+        return False
+
     def on_media_status_changed(self, status):
-        # QMediaPlayer.MediaStatus.EndOfMedia
+        # MediaStatus.EndOfMedia = 6 in PyQt6
         if status == QMediaPlayer.MediaStatus.EndOfMedia and self.is_reading:
             self.current_read_index += 1
             if self.current_read_index < len(self.segments):

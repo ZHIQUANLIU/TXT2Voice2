@@ -25,6 +25,8 @@ TRANSLATIONS = {
         "lang_toggle": "切换中文",
         "direct_play": "Read Aloud (Direct Play)",
         "stop_play": "Stop Reading",
+        "recent_files": "Recent Documents:",
+        "no_recent": "No recent documents",
     },
     "zh": {
         "title": "NexTTS - 高级文档转语音工作室",
@@ -52,5 +54,7 @@ TRANSLATIONS = {
         "lang_toggle": "English",
         "direct_play": "直接朗读 (不转换)",
         "stop_play": "停止朗读",
+        "recent_files": "最近打开的文档:",
+        "no_recent": "暂无记录",
     }
 }
