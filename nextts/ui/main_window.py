@@ -136,7 +136,22 @@ class MainWindow(QMainWindow):
         self.preview_btn = QPushButton(self.t["preview"])
         self.preview_btn.clicked.connect(self.play_sample)
         preview_layout.addWidget(self.preview_btn)
+        
+        self.direct_play_btn = QPushButton(self.t["direct_play"])
+        self.direct_play_btn.clicked.connect(self.toggle_read_aloud)
+        preview_layout.addWidget(self.direct_play_btn)
+        
         right_panel.addLayout(preview_layout)
+
+        # Sequential playback state
+        self.is_reading = False
+        self.current_read_index = -1
+        self.temp_play_dir = "temp_play"
+        if not os.path.exists(self.temp_play_dir):
+            os.makedirs(self.temp_play_dir)
+        
+        # Monitor player status for sequential playback
+        self.player.mediaStatusChanged.connect(self.on_media_status_changed)
 
         # Initial load
         self.on_provider_changed("Edge")
@@ -160,6 +175,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.setText(self.t["settings"])
         self.seg_label.setText(self.t["segments"])
         self.preview_btn.setText(self.t["preview"])
+        self.direct_play_btn.setText(self.t["stop_play"] if self.is_reading else self.t["direct_play"])
         if self.worker is None or not self.worker.isRunning():
             self.progress_hint.setText(self.t["ready"])
 
@@ -217,6 +233,79 @@ class MainWindow(QMainWindow):
             # Refresh voices if provider uses keys
             self.on_provider_changed(self.provider_combo.currentText())
 
+    def toggle_read_aloud(self):
+        if self.is_reading:
+            self.stop_read_aloud()
+        else:
+            self.start_read_aloud()
+
+    def start_read_aloud(self):
+        if not self.segments:
+            QMessageBox.warning(self, self.t["error"], self.t["invalid_file"])
+            return
+        
+        self.is_reading = True
+        self.direct_play_btn.setText(self.t["stop_play"])
+        
+        # Start from selected segment if any, otherwise from start
+        selected = self.segment_list.currentRow()
+        self.current_read_index = selected if selected >= 0 else 0
+        self.play_current_segment()
+
+    def stop_read_aloud(self):
+        self.is_reading = False
+        self.player.stop()
+        self.direct_play_btn.setText(self.t["direct_play"])
+        self.progress_hint.setText(self.t["ready"])
+
+    def play_current_segment(self):
+        if not self.is_reading or self.current_read_index >= len(self.segments):
+            self.stop_read_aloud()
+            return
+        
+        self.segment_list.setCurrentRow(self.current_read_index)
+        title, body = self.segments[self.current_read_index]
+        self.progress_hint.setText(self.t["processing"].format(title))
+
+        # Synthesis and play
+        async def do_read():
+            p_type = self.provider_combo.currentText()
+            voice = self.voice_combo.currentData()
+            
+            p = None
+            if p_type == "Edge": p = EdgeTTSProvider()
+            elif p_type == "OpenAI": p = OpenAITTSProvider(self.config_manager.get_api_key("OpenAI"))
+            elif p_type == "DashScope": p = DashScopeTTSProvider(self.config_manager.get_api_key("DashScope"))
+            elif p_type == "Google": p = GoogleTTSProvider(self.config_manager.get_setting("google_creds_path"))
+            elif p_type == "Local": p = LocalTTSProvider()
+            
+            if p:
+                file_path = os.path.join(self.temp_play_dir, f"segment_{self.current_read_index}.mp3")
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
+                success = await p.synthesize(body, voice, file_path)
+                if success and self.is_reading:
+                    self.player.setSource(QUrl.fromLocalFile(os.path.abspath(file_path)))
+                    self.player.play()
+                elif not success:
+                    QMessageBox.warning(self, self.t["error"], f"Failed to synthesize {title}")
+                    self.stop_read_aloud()
+            else:
+                self.stop_read_aloud()
+
+        # Run synthesis without blocking UI
+        asyncio.run(do_read())
+
+    def on_media_status_changed(self, status):
+        # QMediaPlayer.MediaStatus.EndOfMedia
+        if status == QMediaPlayer.MediaStatus.EndOfMedia and self.is_reading:
+            self.current_read_index += 1
+            if self.current_read_index < len(self.segments):
+                self.play_current_segment()
+            else:
+                self.stop_read_aloud()
+
     def play_sample(self):
         selected = self.segment_list.currentRow()
         if selected < 0:
@@ -234,6 +323,7 @@ class MainWindow(QMainWindow):
             if p_type == "Edge": p = EdgeTTSProvider()
             elif p_type == "OpenAI": p = OpenAITTSProvider(self.config_manager.get_api_key("OpenAI"))
             elif p_type == "DashScope": p = DashScopeTTSProvider(self.config_manager.get_api_key("DashScope"))
+            elif p_type == "Google": p = GoogleTTSProvider(self.config_manager.get_setting("google_creds_path"))
             elif p_type == "Local": p = LocalTTSProvider()
             
             if p:

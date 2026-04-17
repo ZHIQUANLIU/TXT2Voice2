@@ -23,6 +23,8 @@ TRANSLATIONS = {
         "dashscope_key": "DashScope (Qwen) API Key:",
         "browse": "Browse",
         "lang_toggle": "切换中文",
+        "direct_play": "Read Aloud (Direct Play)",
+        "stop_play": "Stop Reading",
     },
     "zh": {
         "title": "NexTTS - 高级文档转语音工作室",
@@ -48,5 +50,7 @@ TRANSLATIONS = {
         "dashscope_key": "DashScope (通义千问) 密钥:",
         "browse": "浏览",
         "lang_toggle": "English",
+        "direct_play": "直接朗读 (不转换)",
+        "stop_play": "停止朗读",
     }
 }
