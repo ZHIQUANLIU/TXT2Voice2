@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.key
+config.json
+sample_preview.mp3
+*.mp3
+*_Audio/
+build/
+dist/
+*.spec
+.vscode/
+.idea/

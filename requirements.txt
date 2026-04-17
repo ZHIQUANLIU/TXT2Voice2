@@ -1,0 +1,9 @@
+PyQt6
+pymupdf
+edge-tts
+openai
+google-cloud-texttospeech
+pyttsx3
+cryptography
+aiohttp
+dashscope
